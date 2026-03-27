@@ -10,7 +10,6 @@ from sympy.core.relational import Eq, Ne, Gt, Lt, Ge, Le
 from sympy.logic.inference import satisfiable
 from sympy.utilities.decorator import memoize_property
 
-from sympy import Function
 
 # Memoization is necessary for the properties of AssumptionKeys to
 # ensure that only one object of Predicate objects are created.
@@ -404,26 +403,30 @@ def _normalize_expr(expr):
     return expr
 
 def _extract_substitutions(assumptions):
+    """
+    Extract simple substitutions implied by assumptions.
+
+    Currently supports:
+    - Q.zero(x)  -> x = 0
+    """
+
     subs = {}
+
+    # Single predicate case: Q.zero(x)
     if isinstance(assumptions, AppliedPredicate):
         if assumptions.function == Q.zero:
             subs[assumptions.arguments[0]] = 0
 
-    elif assumptions.func.__name__ == "And":
-        for arg in assumptions.args:
-            if isinstance(arg, AppliedPredicate) and arg.function == Q.zero:
-                subs[arg.arguments[0]] = 0
-
-    return subs
-
-    if isinstance(assumptions, AppliedPredicate):
-        if assumptions.function == Q.zero:
-            subs[assumptions.arguments[0]] = 0
-
-    elif assumptions.func.__name__ == "And":
-        for arg in assumptions.args:
-            if isinstance(arg, AppliedPredicate) and arg.function == Q.zero:
-                subs[arg.arguments[0]] = 0
+    # Logical AND case: Q.zero(x) & Q.zero(y)
+    else:
+        try:
+            from sympy.logic.boolalg import And
+            if isinstance(assumptions, And):
+                for arg in assumptions.args:
+                    if isinstance(arg, AppliedPredicate) and arg.function == Q.zero:
+                        subs[arg.arguments[0]] = 0
+        except Exception:
+            pass
 
     return subs
 
@@ -540,10 +543,35 @@ def ask(proposition, assumptions=True, context=global_assumptions):
         key, args = Q.is_true, (proposition,)
 
     subs = _extract_substitutions(assumptions)
-    args = tuple(a.subs(subs) if not a.has(Function) else a for a in args)
-    if isinstance(proposition, AppliedPredicate):
-        proposition = key(*args)
 
+    if subs:
+        from sympy import Mul
+        new_args = []
+
+        for a in args:
+            if isinstance(a, Mul):
+                new_mul_args = []
+                zero_found = False
+
+                for arg in a.args:
+                    if arg in subs and subs[arg] == 0:
+                        zero_found = True
+                    else:
+                        new_mul_args.append(arg)
+
+                if zero_found:
+                    if new_mul_args:
+                        # 0 * something → indeterminate → skip substitution
+                        new_args.append(a)
+                        continue
+                    else:
+                        # only zero
+                        new_args.append(a.subs(subs))
+                        continue
+
+            new_args.append(a.subs(subs))
+
+        args = tuple(new_args)
     # convert local and global assumptions to CNF
     assump_cnf = CNF.from_prop(assumptions)
     assump_cnf.extend(context)
@@ -565,16 +593,37 @@ def ask(proposition, assumptions=True, context=global_assumptions):
     res = _ask_single_fact(key, local_facts)
     if res is not None:
         return res
+    
+    from sympy import Mul
 
+    indeterminate = False
+
+    for a in args:
+        if isinstance(a, Mul):
+            has_zero = any(ask(Q.zero(arg), assumptions) is True for arg in a.args)
+            has_unknown = any(ask(Q.infinite(arg), assumptions) is not False for arg in a.args)
+
+            if has_zero and has_unknown:
+                indeterminate = True
+                break
+
+    # Only call _eval_ask if safe
+    if not indeterminate:
+        res = key(*args)._eval_ask(assumptions)
+        if res is not None:
+            return bool(res)
     # direct resolution method, no logic
     res = key(*args)._eval_ask(assumptions)
     if res is not None:
         return bool(res)
 
     # using satask (still costly)
-    res = satask(proposition, assumptions=assumptions, context=context)
-    if res is not None:
-        return res
+    try:
+        res = satask(proposition, assumptions=assumptions, context=context)
+        if res is not None:
+            return res
+    except ValueError:
+        return None
 
     try:
         res = lra_satask(proposition, assumptions=assumptions, context=context)

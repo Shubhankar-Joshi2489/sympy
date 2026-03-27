@@ -32,6 +32,20 @@ def _(expr, assumptions):
 
 @FinitePredicate.register(Add)
 def _(expr, assumptions):
+    has_pos_inf = False
+    has_neg_inf = False
+
+    for arg in expr.args:
+        if ask(Q.positive_infinite(arg), assumptions):
+            has_pos_inf = True
+        if ask(Q.negative_infinite(arg), assumptions):
+            has_neg_inf = True
+
+    #  indeterminate form: ∞ - ∞
+    if has_pos_inf and has_neg_inf:
+        return None
+    
+def _(expr, assumptions):
     """
     Return True if expr is bounded, False if not and None if unknown.
 
@@ -114,6 +128,19 @@ def _(expr, assumptions):
 
 @FinitePredicate.register(Mul)
 def _(expr, assumptions):
+    has_zero = False
+    has_infinite = False
+
+    for arg in expr.args:
+        if ask(Q.zero(arg), assumptions):
+            has_zero = True
+        if ask(Q.infinite(arg), assumptions):
+            has_infinite = True
+
+    # 🔥 indeterminate: 0 * ∞
+    if has_zero and has_infinite:
+        return None
+def _(expr, assumptions):
     """
     Return True if expr is bounded, False if not and None if unknown.
 
@@ -174,6 +201,18 @@ def _(expr, assumptions):
     return result
 
 @FinitePredicate.register(Pow)
+def _(expr, assumptions):
+    base = expr.base
+    exp = expr.exp
+
+    if ask(Q.infinite(base), assumptions) and ask(Q.zero(exp), assumptions):
+        return None  # ∞^0
+
+    if ask(Q.one(base), assumptions) and ask(Q.infinite(exp), assumptions):
+        return None  # 1^∞
+
+    if ask(Q.zero(base), assumptions) and ask(Q.zero(exp), assumptions):
+        return None  # 0^0
 def _(expr, assumptions):
     """
     * Unbounded ** NonZero -> Unbounded
